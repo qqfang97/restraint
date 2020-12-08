@@ -568,14 +568,21 @@ task_heartbeat_callback (gpointer user_data)
         if (task->remaining_time > HEARTBEAT) {
             task->remaining_time -= HEARTBEAT;
         } else {
-            task->remaining_time = 0;
+            g_print("task %s, %s lwd triggerd\n", task->task_id, task->name);
+            task_run_data->overload += load_eval()? 1 : 4;
+            if (task_run_data->overload > 0 && task_run_data->overload < 4) {
+                g_print("task %s extend 900s\n", task->task_id);
+                task->remaining_time += 900;
+            } else {
+                task->remaining_time = 0;
+            }
         }
     }
     restraint_config_set (app_data->config_file, task->task_id,
                           "remaining_time", NULL,
                           G_TYPE_UINT64, task->remaining_time);
 
-    restraint_log_lwd_message(task_run_data->app_data,
+    restraint_log_lwd_message(task_run_data->thrdata,
                               task_run_data->expire_time,
                               modified_wd);
 
@@ -754,6 +761,22 @@ restraint_task_watchdog (Task *task, ThreadData *thrdata, guint64 seconds)
     gchar *data = NULL;
 
     recipe_watchdog_uri = soup_uri_new_with_base(task->recipe->recipe_uri, "watchdog");
+
+    server_msg = soup_message_new_from_uri("GET", recipe_watchdog_uri);
+    soup_session_send_message(soup_session, server_msg);
+    const gchar *resp = server_msg->response_body->data;
+    g_print("task %s, ext remain time is %s\n", task->task_id, resp);
+    gchar **tmp = g_strsplit(resp, " ", -1);
+    guint64 remaining_time = g_ascii_strtoull(*++tmp, NULL, BASE10);
+    g_object_unref(server_msg);
+    g_strfreev(--tmp);
+    if (remaining_time > seconds)
+    {
+        g_print("task %s skip exttime update\n", task->task_id);
+        task_handler_attach(thrdata);
+        return;
+    }
+
     server_msg = soup_message_new_from_uri("POST", recipe_watchdog_uri);
 
     soup_uri_free(recipe_watchdog_uri);
