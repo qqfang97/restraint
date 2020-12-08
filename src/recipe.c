@@ -32,6 +32,9 @@
 #include "xml.h"
 #include "beaker_harness.h"
 
+GThreadPool *pool;
+guint test_round;
+
 GQuark restraint_recipe_parse_error_quark(void) {
     return g_quark_from_static_string("restraint-recipe-parse-error-quark");
 }
@@ -579,6 +582,66 @@ restraint_recipe_parse_stream (GInputStream *stream, gpointer user_data)
     AppData *app_data = (AppData *) user_data;
 
     restraint_xml_parse_from_stream(stream, app_data->recipe_url, fetch_completed, app_data);
+}
+
+void thread_loop_run(gpointer push_data, gpointer user_data)
+{
+	AppData *app_data = (AppData *) user_data;
+	ThreadData *thrdata = g_slice_new0(ThreadData);
+	thrdata->app_data = app_data;
+	GSource *source;
+	GMainContext *ctxt;
+	GMainLoop *loop;
+	static GMutex task_sync;
+
+	source = g_idle_source_new();
+	ctxt = g_main_context_new();
+	g_source_attach(source, ctxt);
+	thrdata->ctxt = ctxt;
+	loop = g_main_loop_new(ctxt, FALSE);
+	thrdata->loop = loop;
+
+	g_mutex_lock(&task_sync);
+	if (curr_task == NULL) {
+		g_mutex_unlock(&task_sync);
+		return;
+        }
+
+	thrdata->task = curr_task->data;
+	curr_task = g_list_next(curr_task);
+	g_mutex_unlock(&task_sync);
+
+	g_source_set_callback(source, task_handler, thrdata, NULL);
+	g_main_loop_run(loop);
+}
+
+void thread_loop_stop(gpointer user_data)
+{
+	ThreadData *thrdata = (ThreadData *) user_data;
+	g_main_loop_quit(thrdata->loop);
+}
+
+static void restraint_multithread_push(gpointer user_data, GList *tasks, GThreadPool *pool, guint thr_num)
+{
+	guint i;
+	AppData *app_data = (AppData *) user_data;
+
+	curr_task = tasks;
+	if (g_list_length(tasks) == 0)
+	{
+		if (test_round == 2)
+			app_data->state = RECIPE_COMPLETE;
+		else {
+			app_data->state = RECIPE_RUN;
+			test_round++;
+		}
+		return;
+	} else
+		app_data->state = RECIPE_RUNNING;
+
+	for (i = 0; i < thr_num; i++) {
+		g_thread_pool_push(pool, app_data, NULL);
+	}
 }
 
 gboolean
